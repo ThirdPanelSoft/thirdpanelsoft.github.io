@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Desert Bus</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: orange;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+        }
+        #timer {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            font-size: 24px;
+            font-family: Arial, sans-serif;
+            background: rgba(0, 0, 0, 0.5);
+            color: white;
+            padding: 5px 10px;
+            border-radius: 5px;
+        }
+        canvas {
+            background: #808080;
+        }
+    </style>
+</head>
+<body>
+    <div id="timer">Time: 08:00:00</div>
+    <canvas id="gameCanvas"></canvas>
+    <script>
+        const canvas = document.getElementById("gameCanvas");
+        const ctx = canvas.getContext("2d");
+
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            roadWidth = canvas.width * 0.27;
+            roadX = (canvas.width - roadWidth) / 2;
+        }
+
+        window.addEventListener("resize", resizeCanvas);
+
+        let roadWidth, roadX;
+        let bus, roadOffset, keys, drift, countdown, isMoving;
+        let beeping = false;
+        let beepAudioCtx = null;
+        let oscillator = null;
+
+        function resetGame() {
+            bus = { width: 65, height: 150, speed: 1.5, x: 0, y: canvas.height - 300 };
+            roadOffset = 0;
+            keys = {};
+            drift = 0.5;
+            countdown = 8 * 3600;
+            isMoving = false;
+            bus.x = roadX + (roadWidth - bus.width) / 2;
+            stopBeep();
+        }
+
+        window.addEventListener("keydown", (e) => {
+            keys[e.key] = true;
+            isMoving = keys["ArrowLeft"] || keys["a"] || keys["ArrowRight"] || keys["d"];
+        });
+
+        window.addEventListener("keyup", (e) => {
+            keys[e.key] = false;
+            isMoving = keys["ArrowLeft"] || keys["a"] || keys["ArrowRight"] || keys["d"];
+        });
+
+        function startBeep() {
+            if (!beeping) {
+                beepAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                oscillator = beepAudioCtx.createOscillator();
+                let gainNode = beepAudioCtx.createGain();
+
+                oscillator.type = "sine";
+                oscillator.frequency.setValueAtTime(1000, beepAudioCtx.currentTime);
+                gainNode.gain.setValueAtTime(0.1, beepAudioCtx.currentTime);
+
+                oscillator.connect(gainNode);
+                gainNode.connect(beepAudioCtx.destination);
+
+                oscillator.start();
+                beeping = true;
+            }
+        }
+
+        function stopBeep() {
+            if (beeping) {
+                oscillator.stop();
+                beepAudioCtx.close();
+                beeping = false;
+            }
+        }
+
+        function update() {
+            roadOffset = (roadOffset + 5) % 300;
+
+            let movingLeft = keys["ArrowLeft"] || keys["a"];
+            let movingRight = keys["ArrowRight"] || keys["d"];
+
+            if (movingLeft && !movingRight) {
+                bus.x -= bus.speed;
+                isMoving = true;
+            } else if (movingRight && !movingLeft) {
+                bus.x += bus.speed;
+                isMoving = true;
+            } else {
+                isMoving = false;
+            }
+
+            if (!isMoving) {
+                bus.x += drift;
+            }
+
+            let busLeft = bus.x;
+            let busRight = bus.x + bus.width;
+            let roadLeft = roadX;
+            let roadRight = roadX + roadWidth;
+            if (busRight <= roadLeft || busLeft >= roadRight) {
+                stopBeep();
+                alert("Crashed! Resetting game...");
+                resetGame();
+            }
+            else if (busLeft < roadLeft || busRight > roadRight) {
+                startBeep();
+            } else {
+                stopBeep();
+            }
+
+            updateTimer();
+            draw();
+            requestAnimationFrame(update);
+        }
+
+        function draw() {
+            ctx.fillStyle = "orange";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = "#808080";
+            ctx.fillRect(roadX, 0, roadWidth, canvas.height);
+            ctx.fillStyle = "yellow";
+            for (let i = -40; i < canvas.height; i += 300) {
+                ctx.fillRect(roadX + roadWidth / 2 - 10, i + roadOffset, 20, 80);
+            }
+            ctx.fillStyle = "red";
+            ctx.fillRect(bus.x, bus.y, bus.width, bus.height);
+        }
+
+        let lastUpdateTime = Date.now();
+
+        function updateTimer() {
+            let now = Date.now();
+            let elapsed = now - lastUpdateTime;
+
+            if (elapsed >= 1000) {
+                lastUpdateTime = now;
+                if (countdown > 0) {
+                    countdown--;
+                } else {
+                    stopBeep();
+                    alert("Congratulations! You have won Desert Bus.");
+                    resetGame();
+                }
+
+                let hours = String(Math.floor(countdown / 3600)).padStart(2, '0');
+                let minutes = String(Math.floor((countdown % 3600) / 60)).padStart(2, '0');
+                let seconds = String(countdown % 60).padStart(2, '0');
+                document.getElementById("timer").innerText = `Time: ${hours}:${minutes}:${seconds}`;
+            }
+        }
+
+        resizeCanvas();
+        resetGame();
+        update();
+    </script>
+</body>
+</html>
