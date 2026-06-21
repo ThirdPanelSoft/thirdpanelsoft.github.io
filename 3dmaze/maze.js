@@ -746,7 +746,7 @@ point = mult(
 			pointsArray.push(point);
 var faceCount = polyind[i].length / 3;
 var face = Math.floor(j / 3);
-var shade = 0.08 + 0.22 * face / (faceCount - 1);
+var shade = 0.03 + 0.15 * face / (faceCount - 1);
 
 colorsArray.push([shade, shade, shade, 1]);
 			texCoordsArray.push(texCoord[0][j % 3]);
@@ -912,14 +912,14 @@ var render = function() {
     else {
         handlePlayerInput();
     }
-
+for (let i = 0; i < 4; i++) {
     [rattheta, ratX, ratY, ratdtheta, ratdX, ratdY] =
         nextMove(rattheta, ratX, ratY, ratdtheta, ratdX, ratdY);
 
     while (ratdtheta)
         [rattheta, ratX, ratY, ratdtheta, ratdX, ratdY] =
             nextMove(rattheta, ratX, ratY, ratdtheta, ratdX, ratdY);
-
+}
     updateCloyd(dt);
     if (gameOver) return;
 
