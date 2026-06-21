@@ -779,7 +779,7 @@ function quad(a, b, c, d, t, f) {
 
 function handlePlayerInput() {
     var turnSpeed = Math.PI / 90;
-    var moveSpeed = 0.03;
+    var moveSpeed = 0.025;
     var turnFlip = (up[2] < 0) ? -1 : 1;
 
     if (keys["ArrowLeft"] || keys["a"] || keys["A"]) {
