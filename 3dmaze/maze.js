@@ -16,8 +16,8 @@ POLYNUM = Math.min(POLYNUM, MzX * MzY - 4);
 OPENNUM = Math.min(OPENNUM, MzX * MzY - 4 - POLYNUM);
 
 const CLOYD_CHASE_MS = 20000;
-const CLOYD_SPEED = 0.6;
-const CLOYD_BG_A = './clair.webp';
+const CLOYD_SPEED = 0.8;
+const CLOYD_BG_A = './clair.png';
 const CLOYD_BG_B = './floyd.png';
 var shapeFlipActive = false;
 var shapeFlipRemaining = 0;
@@ -242,6 +242,7 @@ function triggerCaught() {
 		document.body.style.backgroundRepeat = 'no-repeat';
 		document.body.style.backgroundPosition = 'center center';
 		document.body.style.backgroundSize = 'cover';
+                document.body.style.backgroundColor = '#000000';
 	}
 	applyBg();
 	caughtBgInterval = setInterval(function() {
@@ -672,7 +673,7 @@ window.onload = function() {
 										};
 										cloydAltImg.src = './floyd.png';
 									};
-									cloydImg.src = './clair.webp';
+									cloydImg.src = './clair.png';
 								};
 								ratImg.src = './rat.png';
 							};
