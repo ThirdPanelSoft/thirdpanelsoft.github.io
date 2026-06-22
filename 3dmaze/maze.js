@@ -3,21 +3,34 @@ var gl;
 var program;
 var startTime = new Date();
 var keys = {};
+var queuedDelta = null;
 
-//EDITABLE CONSTANTS
-const MzX = 10; //X dimension of Maze
-const MzY = 10; //Y dimension of Maze
-var PICNUM = 4; //number of picture walls
-var POLYNUM = 10; //number of polyhedra
-var OPENNUM = 5; //number of floating opengl's
+// EDITABLE CONSTANTS
+const MzX = 10; // X dimension of Maze
+const MzY = 10; // Y dimension of Maze
+var PICNUM = 4; // number of picture walls
+var POLYNUM = 10; // number of polyhedra
+var OPENNUM = 5; // number of floating opengl's
 var controlFlip = 1;
 POLYNUM = Math.min(POLYNUM, MzX * MzY - 4);
 OPENNUM = Math.min(OPENNUM, MzX * MzY - 4 - POLYNUM);
 
 const CLOYD_CHASE_MS = 20000;
-const CLOYD_SPEED = 1.2;
+const CLOYD_SPEED = 0.5;
 const CLOYD_BG_A = './clair.webp';
 const CLOYD_BG_B = './floyd.png';
+var shapeFlipActive = false;
+var shapeFlipRemaining = 0;
+var shapeFlipTargetSign = 1;
+var shapeFlipAxis = 0; // 0 = X, 1 = Y
+const BASE_FRAME_MS = 1000 / 60;
+const PLAYER_MOVE_SPEED = 0.025;
+const PLAYER_TURN_SPEED = Math.PI / 60;
+const INTRO_HEIGHT_SPEED = 0.02;
+const INTRO_ROTATE_SPEED_DEG = 4;
+
+var introComplete = false;
+var targetTheta = 0;
 
 var openplaces;
 var SX, SY;
@@ -63,7 +76,7 @@ var gameOver = false;
 var caughtBgInterval = null;
 
 function isNear(a, b, radius) {
-    return Math.abs(a - b) < radius;
+	return Math.abs(a - b) < radius;
 }
 
 function clampCellX(x) {
@@ -73,7 +86,9 @@ function clampCellX(x) {
 function clampCellY(y) {
 	return Math.max(0, Math.min(MzY - 1, y));
 }
-
+function snapToQuarterTurn(angle) {
+    return Math.round(angle / (Math.PI / 2)) * (Math.PI / 2);
+}
 function canMoveBetweenCells(x1, y1, x2, y2) {
 	if (x1 === x2 && y1 === y2) return true;
 
@@ -271,6 +286,124 @@ function updateCloyd(dt) {
 	}
 }
 
+function normalizeAngle(a) {
+	while (a <= -Math.PI) a += Math.PI * 2;
+	while (a > Math.PI) a -= Math.PI * 2;
+	return a;
+}
+
+function angleDiff(target, current) {
+	return normalizeAngle(target - current);
+}
+
+function approachAngle(current, target, maxStep) {
+	var diff = angleDiff(target, current);
+	if (Math.abs(diff) <= maxStep) return normalizeAngle(target);
+	return normalizeAngle(current + Math.sign(diff) * maxStep);
+}
+
+function queueCameraTurnFromKey(key) {
+	if (shapeFlipActive) return;
+
+	var k = String(key).toLowerCase();
+	var delta = null;
+	var turnFlip = (up[2] < 0) ? -1 : 1;
+
+	if (k === "arrowup" || k === "w") {
+		delta = 0;
+	} else if (k === "arrowleft" || k === "a") {
+		delta = turnFlip * (Math.PI / 2);
+	} else if (k === "arrowright" || k === "d") {
+		delta = turnFlip * (-Math.PI / 2);
+	} else if (k === "arrowdown" || k === "s") {
+		delta = Math.PI;
+	}
+
+	if (delta !== null) {
+var base = snapToQuarterTurn(targetTheta);
+targetTheta = snapToQuarterTurn(base + delta);
+	}
+}
+
+function handlePlayerInput() {
+	// Keep camera turning consistent even when the player is upside down.
+	if (shapeFlipActive) return;
+
+	var turnSpeed = Math.PI / 90;
+	var moveSpeed = 0.025;
+	var turnFlip = (up[2] < 0) ? -1 : 1;
+
+	if (keys["ArrowLeft"] || keys["a"] || keys["A"]) {
+		theta += turnFlip * turnSpeed;
+	}
+	if (keys["ArrowRight"] || keys["d"] || keys["D"]) {
+		theta -= turnFlip * turnSpeed;
+	}
+
+	var dx = 0;
+	var dy = 0;
+
+	if (keys["ArrowUp"] || keys["w"] || keys["W"]) {
+		dx += Math.cos(theta) * moveSpeed;
+		dy += Math.sin(theta) * moveSpeed;
+	}
+	if (keys["ArrowDown"] || keys["s"] || keys["S"]) {
+		dx -= Math.cos(theta) * moveSpeed;
+		dy -= Math.sin(theta) * moveSpeed;
+	}
+
+	tryMove(dx, dy);
+}
+
+function updateIntroAnimation(dt) {
+	var scale = dt / BASE_FRAME_MS;
+
+	if (height < 3 / 4) {
+		height = Math.min(3 / 4, height + INTRO_HEIGHT_SPEED * scale);
+		return;
+	}
+
+	if (Math.abs(Math.abs(up[2]) - 1) > 0.0001) {
+		var rot = INTRO_ROTATE_SPEED_DEG * scale;
+
+		if (((Math.round(theta / Math.PI * 180 * 10000) / 10000 % 360 / 90) + 5) % 2) {
+			up = vec3(mult(rotateX(rot), vec4(up)));
+		} else {
+			up = vec3(mult(rotateY(rot), vec4(up)));
+		}
+		return;
+	}
+
+	introComplete = true;
+	targetTheta = theta;
+}
+
+function updatePlayerNavigation(dt) {
+	if (!introComplete) {
+		updateIntroAnimation(dt);
+		return;
+	}
+
+	// Pause player movement and turning while a shape flip animation is running.
+	if (shapeFlipActive) return;
+
+	var scale = dt / BASE_FRAME_MS;
+	var turnStep = PLAYER_TURN_SPEED * scale;
+
+	var diff = angleDiff(targetTheta, theta);
+	if (Math.abs(diff) > 0.001) {
+		theta = approachAngle(theta, targetTheta, turnStep);
+		return;
+	}
+
+	theta = snapToQuarterTurn(targetTheta);
+
+	var moveStep = PLAYER_MOVE_SPEED * scale;
+	var dx = Math.cos(theta) * moveStep;
+	var dy = Math.sin(theta) * moveStep;
+	tryMove(dx, dy);
+}
+
 var texCoord = [
 	[
 		vec2(0, 0),
@@ -287,14 +420,14 @@ var texCoord = [
 ];
 
 var vertexColors = [
-    vec4(0.0, 0.0, 0.0, 1.0),  // black
-    vec4(1.0, 0.0, 0.0, 1.0),  // red
-    vec4(1.0, 1.0, 0.0, 1.0),  // yellow
-    vec4(0.0, 1.0, 0.0, 1.0),  // green
-    vec4(0.0, 0.0, 1.0, 1.0),  // blue
-    vec4(1.0, 0.0, 1.0, 1.0),  // magenta
-    vec4(0.0, 1.0, 1.0, 1.0),  // cyan
-    vec4(1.0, 1.0, 1.0, 1.0),  // white
+	vec4(0.0, 0.0, 0.0, 1.0),  // black
+	vec4(1.0, 0.0, 0.0, 1.0),  // red
+	vec4(1.0, 1.0, 0.0, 1.0),  // yellow
+	vec4(0.0, 1.0, 0.0, 1.0),  // green
+	vec4(0.0, 0.0, 1.0, 1.0),  // blue
+	vec4(1.0, 0.0, 1.0, 1.0),  // magenta
+	vec4(0.0, 1.0, 1.0, 1.0),  // cyan
+	vec4(1.0, 1.0, 1.0, 1.0),  // white
 ];
 
 var polyvert = [[
@@ -357,44 +490,62 @@ function resizeCanvas() {
 	gl.viewport(0, 0, canvas.width, canvas.height);
 	aspect = canvas.width / canvas.height;
 }
-    
+
 window.addEventListener("keydown", function (e) {
-    keys[e.key] = true;
+	keys[e.key] = true;
+
+	if (
+		e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "ArrowLeft" || e.key === "ArrowRight" ||
+		e.key === "w" || e.key === "a" || e.key === "s" || e.key === "d" ||
+		e.key === "W" || e.key === "A" || e.key === "S" || e.key === "D"
+	) {
+		e.preventDefault();
+		if (!e.repeat) {
+			queueCameraTurnFromKey(e.key);
+		}
+	}
 });
 
 window.addEventListener("keyup", function (e) {
-    keys[e.key] = false;
+	keys[e.key] = false;
+
+	if (
+		e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "ArrowLeft" || e.key === "ArrowRight" ||
+		e.key === "w" || e.key === "a" || e.key === "s" || e.key === "d" ||
+		e.key === "W" || e.key === "A" || e.key === "S" || e.key === "D"
+	) {
+		e.preventDefault();
+	}
 });
 
 window.onload = function() {
-    canvas = document.getElementById("gl-canvas");
+	canvas = document.getElementById("gl-canvas");
 
-    gl = WebGLUtils.setupWebGL(canvas);
-    if (!gl) { alert("WebGL isn't available"); }
+	gl = WebGLUtils.setupWebGL(canvas);
+	if (!gl) { alert("WebGL isn't available"); }
 
 	window.addEventListener('resize', resizeCanvas, false);
 	resizeCanvas();
-    
-    gl.clearColor(0, 0, 0, 1.0);
-    gl.enable(gl.DEPTH_TEST);
+
+	gl.clearColor(0, 0, 0, 1.0);
+	gl.enable(gl.DEPTH_TEST);
 
 	gl.enable(gl.BLEND);
-	gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);    
-    
+	gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
-    //
-    //  Load shaders and initialize attribute buffers
-    //
-    program = initShaders(gl, "vertex-shader", "fragment-shader");
-    gl.useProgram(program);    
+	//
+	//  Load shaders and initialize attribute buffers
+	//
+	program = initShaders(gl, "vertex-shader", "fragment-shader");
+	gl.useProgram(program);
 
 	resetVars();
 
 	gl.enable(gl.CULL_FACE);
 
-    modelViewMatrixLoc = gl.getUniformLocation(program, "modelViewMatrix");
-    projectionMatrixLoc = gl.getUniformLocation(program, "projectionMatrix");
-    scaleMatrixLoc = gl.getUniformLocation(program, "scaleMatrix");
+	modelViewMatrixLoc = gl.getUniformLocation(program, "modelViewMatrix");
+	projectionMatrixLoc = gl.getUniformLocation(program, "projectionMatrix");
+	scaleMatrixLoc = gl.getUniformLocation(program, "scaleMatrix");
 
 	gl.uniform1i(gl.getUniformLocation(program, "wall"), 0);
 	gl.uniform1i(gl.getUniformLocation(program, "floor"), 1);
@@ -405,20 +556,19 @@ window.onload = function() {
 	gl.uniform1i(gl.getUniformLocation(program, "open"), 6);
 	gl.uniform1i(gl.getUniformLocation(program, "rat"), 7);
 	gl.uniform1i(gl.getUniformLocation(program, "cloyd"), 9);
+	//
+	// Initialize textures
+	//
 
-    //
-    // Initialize textures
-    //
-
-    const wallImg = new Image();
+	const wallImg = new Image();
 	wallImg.onload = function() {
-  		const wallTexture = gl.createTexture();
-  		gl.activeTexture(gl.TEXTURE0);
-  		gl.bindTexture(gl.TEXTURE_2D, wallTexture);
-  		gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, wallImg);
-  		gl.generateMipmap(gl.TEXTURE_2D);
+		const wallTexture = gl.createTexture();
+		gl.activeTexture(gl.TEXTURE0);
+		gl.bindTexture(gl.TEXTURE_2D, wallTexture);
+		gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, wallImg);
+		gl.generateMipmap(gl.TEXTURE_2D);
 
-  		const floorImg = new Image();
+		const floorImg = new Image();
 		floorImg.onload = function() {
 			const floorTexture = gl.createTexture();
 			gl.activeTexture(gl.TEXTURE0 + 1);
@@ -461,7 +611,7 @@ window.onload = function() {
 							gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, finImg);
 							gl.generateMipmap(gl.TEXTURE_2D);
 							gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-						
+
 							const openImg = new Image();
 							openImg.onload = function() {
 								const openTexture = gl.createTexture();
@@ -470,7 +620,7 @@ window.onload = function() {
 								gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, openImg);
 								gl.generateMipmap(gl.TEXTURE_2D);
 								gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-	
+
 								const ratImg = new Image();
 								ratImg.onload = function() {
 									const ratTexture = gl.createTexture();
@@ -479,73 +629,82 @@ window.onload = function() {
 									gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, ratImg);
 									gl.generateMipmap(gl.TEXTURE_2D);
 									gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-const cloydImg = new Image();
-cloydImg.onload = function() {
-	cloydTextureA = gl.createTexture();
-	gl.activeTexture(gl.TEXTURE0 + 9);
-	gl.bindTexture(gl.TEXTURE_2D, cloydTextureA);
-	gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cloydImg);
 
-	if ((cloydImg.width & (cloydImg.width - 1)) === 0 && (cloydImg.height & (cloydImg.height - 1)) === 0) {
-		gl.generateMipmap(gl.TEXTURE_2D);
-		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
-		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
-	} else {
-		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-	}
+									const cloydImg = new Image();
+									cloydImg.onload = function() {
+										cloydTextureA = gl.createTexture();
+										gl.activeTexture(gl.TEXTURE0 + 9);
+										gl.bindTexture(gl.TEXTURE_2D, cloydTextureA);
+										gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cloydImg);
 
-	const cloydAltImg = new Image();
-	cloydAltImg.onload = function() {
-		cloydTextureB = gl.createTexture();
-		gl.activeTexture(gl.TEXTURE0 + 9);
-		gl.bindTexture(gl.TEXTURE_2D, cloydTextureB);
-		gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cloydAltImg);
+										if ((cloydImg.width & (cloydImg.width - 1)) === 0 && (cloydImg.height & (cloydImg.height - 1)) === 0) {
+											gl.generateMipmap(gl.TEXTURE_2D);
+											gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+											gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+											gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+										} else {
+											gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+											gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+											gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+											gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+										}
 
-		if ((cloydAltImg.width & (cloydAltImg.width - 1)) === 0 && (cloydAltImg.height & (cloydAltImg.height - 1)) === 0) {
-			gl.generateMipmap(gl.TEXTURE_2D);
-			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
-			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
-		} else {
-			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-		}
+										const cloydAltImg = new Image();
+										cloydAltImg.onload = function() {
+											cloydTextureB = gl.createTexture();
+											gl.activeTexture(gl.TEXTURE0 + 9);
+											gl.bindTexture(gl.TEXTURE_2D, cloydTextureB);
+											gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cloydAltImg);
 
-		render();
-	};
-	cloydAltImg.src = './floyd.png';
-};
-cloydImg.src = './clair.webp';
+											if ((cloydAltImg.width & (cloydAltImg.width - 1)) === 0 && (cloydAltImg.height & (cloydAltImg.height - 1)) === 0) {
+												gl.generateMipmap(gl.TEXTURE_2D);
+												gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+												gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+												gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+											} else {
+												gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+												gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+												gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+												gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+											}
+
+											render();
+										};
+										cloydAltImg.src = './floyd.png';
+									};
+									cloydImg.src = './clair.webp';
 								};
-								ratImg.src = './rat.png'; 
+								ratImg.src = './rat.png';
 							};
-							openImg.src = './gl.png'; 
+							openImg.src = './gl.png';
 						};
-						finImg.src = './fin.png'; 
+						finImg.src = './fin.png';
 					};
-					startImg.src = './start2.png'; 
+					startImg.src = './start2.png';
 				};
-				picImg.src = './pic.bmp'; 
+				picImg.src = './pic.bmp';
 			};
 			ceilingImg.src = './ceiling2.bmp';
 		};
 		floorImg.src = './floor.bmp';
 	};
-	wallImg.src = './wall.bmp';    
-	       
-}
+	wallImg.src = './wall.bmp';
+};
 
 function resetVars() {
-	lighting = 0;
-	gameOver = false;
-	cloydChaseTimer = CLOYD_CHASE_MS;
-	lastFrameTime = Date.now();
+    lighting = 0;
+    gameOver = false;
+    introComplete = false;
+    targetTheta = 0;
+    keys = {};
+    cloydChaseTimer = CLOYD_CHASE_MS;
+    lastFrameTime = Date.now();
+
+    // Reset shape flip state
+    shapeFlipActive = false;
+    shapeFlipRemaining = 0;
+    shapeFlipTargetSign = 1;
+    shapeFlipAxis = 0;
 
 	if (caughtBgInterval) {
 		clearInterval(caughtBgInterval);
@@ -596,7 +755,7 @@ function resetVars() {
 	cloydtheta = 0;
 	cloyddtheta = 0;
 
-	//don't start facing a wall
+	// don't start facing a wall
 	if (maze[SY][SX][1] != 1) {
 		if (maze[SY][SX][0] == 1) {
 			theta = -90 / 180 * Math.PI;
@@ -613,13 +772,15 @@ function resetVars() {
 		SX1 = SX + 1;
 	}
 
+	targetTheta = theta;
+
 	for (var i = 0; i < openplaces.length; i++) {
 		if (openplaces[i][0] == SX1 && openplaces[i][1] == SY1) {
 			openplaces.splice(i, 1);
 			break;
 		}
 	}
-	
+
 	polypos = [];
 	for (var i = 0; i < POLYNUM; i++) {
 		polypos.push(openplaces.splice(Math.floor(Math.random() * openplaces.length), 1)[0].concat([Math.floor(Math.random() * 4)]));
@@ -631,7 +792,7 @@ function resetVars() {
 	}
 
 	[FinX, FinY] = openplaces.splice(Math.floor(Math.random() * openplaces.length), 1)[0];
-	
+
 	[ratX, ratY] = openplaces.splice(Math.floor(Math.random() * openplaces.length), 1)[0];
 	ratX += .5;
 	ratY += .5;
@@ -641,7 +802,7 @@ function resetVars() {
 	cloydY += .5;
 
 	up = vec3(0.0, 0.0, 1.0);
-	
+
 	NumVertices = 0;
 	elgible = [];
 	for (var i = 0; i < maze.length; i++) {
@@ -654,43 +815,43 @@ function resetVars() {
 			}
 		}
 	}
-	if (PICNUM > elgible.length)
-		PICNUM = elgible.length;
-	for (var i = 0; i < PICNUM; i++) {
+
+	var picCount = Math.min(PICNUM, elgible.length);
+	for (var i = 0; i < picCount; i++) {
 		var pos = elgible.splice(Math.floor(Math.random() * elgible.length), 1)[0];
 		maze[pos[0]][pos[1]][pos[2]] = 3;
 	}
-	
+
 	pointsArray = [];
 	colorsArray = [];
 	texCoordsArray = [];
 
-    mazevertices();        
+	mazevertices();
 
-    //
-    //  Load shaders and initialize attribute buffers
-    //
-    gl.useProgram(program);
+	//
+	//  Load shaders and initialize attribute buffers
+	//
+	gl.useProgram(program);
 
-    var cBuffer = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, cBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, flatten(colorsArray), gl.STATIC_DRAW);
-    
-    var vColor = gl.getAttribLocation(program, "vColor");
-    gl.vertexAttribPointer(vColor, 4, gl.FLOAT, false, 0, 0);
-    gl.enableVertexAttribArray(vColor);
+	var cBuffer = gl.createBuffer();
+	gl.bindBuffer(gl.ARRAY_BUFFER, cBuffer);
+	gl.bufferData(gl.ARRAY_BUFFER, flatten(colorsArray), gl.STATIC_DRAW);
 
-    var vBuffer = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, vBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, flatten(pointsArray), gl.STATIC_DRAW);
-    
-    var vPosition = gl.getAttribLocation(program, "vPosition");
-    gl.vertexAttribPointer(vPosition, 4, gl.FLOAT, false, 0, 0);
-    gl.enableVertexAttribArray(vPosition);
-	
+	var vColor = gl.getAttribLocation(program, "vColor");
+	gl.vertexAttribPointer(vColor, 4, gl.FLOAT, false, 0, 0);
+	gl.enableVertexAttribArray(vColor);
+
+	var vBuffer = gl.createBuffer();
+	gl.bindBuffer(gl.ARRAY_BUFFER, vBuffer);
+	gl.bufferData(gl.ARRAY_BUFFER, flatten(pointsArray), gl.STATIC_DRAW);
+
+	var vPosition = gl.getAttribLocation(program, "vPosition");
+	gl.vertexAttribPointer(vPosition, 4, gl.FLOAT, false, 0, 0);
+	gl.enableVertexAttribArray(vPosition);
+
 	var tBuffer = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, tBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, flatten(texCoordsArray), gl.STATIC_DRAW);
+	gl.bindBuffer(gl.ARRAY_BUFFER, tBuffer);
+	gl.bufferData(gl.ARRAY_BUFFER, flatten(texCoordsArray), gl.STATIC_DRAW);
 
 	var vTexCoord = gl.getAttribLocation(program, "vTexCoord");
 	gl.vertexAttribPointer(vTexCoord, 2, gl.FLOAT, false, 0, 0);
@@ -721,7 +882,7 @@ function mazevertices() {
 			if (!maze[i][j][2])
 				quad(vertices[5], vertices[6], vertices[2], vertices[1], 0, 0);
 			if (!maze[i][j][3])
-				quad(vertices[4], vertices[5], vertices[1], vertices[0], 0, 0);	
+				quad(vertices[4], vertices[5], vertices[1], vertices[0], 0, 0);
 			if (maze[i][j][0] == 3)
 				quad(vertices[0], vertices[3], vertices[7], vertices[4], 3, 1);
 			if (maze[i][j][1] == 3)
@@ -729,34 +890,34 @@ function mazevertices() {
 			if (maze[i][j][2] == 3)
 				quad(vertices[5], vertices[6], vertices[2], vertices[1], 3, 0);
 			if (maze[i][j][3] == 3)
-				quad(vertices[4], vertices[5], vertices[1], vertices[0], 3, 0);	
-		}		
+				quad(vertices[4], vertices[5], vertices[1], vertices[0], 3, 0);
+		}
 	}
 
 	quad([0, .5, 0, 1], [0, -.5, 0, 1], [0, -.5, 1, 1], [0, .5, 1, 1], 0, 0);
 
-    for (var i = 0; i < polyind.length; ++i) {
-    	for (var j = 0; j < polyind[i].length; ++j) {
-var scales = [0.20, 0.15, 0.13, 0.10];
+	for (var i = 0; i < polyind.length; ++i) {
+		for (var j = 0; j < polyind[i].length; ++j) {
+			var scales = [0.20, 0.15, 0.13, 0.10];
 
-point = mult(
-    scalem(scales[i], scales[i], scales[i]),
-    polyvert[i][polyind[i][j]]
-);
+			point = mult(
+				scalem(scales[i], scales[i], scales[i]),
+				polyvert[i][polyind[i][j]]
+			);
 			pointsArray.push(point);
-var faceCount = polyind[i].length / 3;
-var face = Math.floor(j / 3);
-var shade = 0.03 + 0.15 * face / (faceCount - 1);
+			var faceCount = polyind[i].length / 3;
+			var face = Math.floor(j / 3);
+			var shade = 0.03 + 0.15 * face / (faceCount - 1);
 
-colorsArray.push([shade, shade, shade, 1]);
+			colorsArray.push([shade, shade, shade, 1]);
 			texCoordsArray.push(texCoord[0][j % 3]);
-    	}
-    }
+		}
+	}
 }
 
 function quad(a, b, c, d, t, f) {
-	//t0 = wall, t1=floor/ceilings, t3=pic
-	//f0 = dont flip, f1=flip
+	// t0 = wall, t1=floor/ceilings, t3=pic
+	// f0 = dont flip, f1=flip
 
 	var indices = [a, b, c, a, c, d];
 	var indices2 = [1, 2, 3, 1, 3, 0];
@@ -770,305 +931,305 @@ function quad(a, b, c, d, t, f) {
 		return;
 	}
 
-    for (var i = 0; i < indices.length; ++i) {
-        pointsArray.push(indices[i]);
+	for (var i = 0; i < indices.length; ++i) {
+		pointsArray.push(indices[i]);
 		colorsArray.push(vertexColors[7]);
 		texCoordsArray.push(texCoord[t][(indices2[i] + 2 * (f && !t)) % 4]);
-    }
-}
-
-function handlePlayerInput() {
-    var turnSpeed = Math.PI / 90;
-    var moveSpeed = 0.025;
-    var turnFlip = (up[2] < 0) ? -1 : 1;
-
-    if (keys["ArrowLeft"] || keys["a"] || keys["A"]) {
-        theta += turnFlip * turnSpeed;
-    }
-    if (keys["ArrowRight"] || keys["d"] || keys["D"]) {
-        theta -= turnFlip * turnSpeed;
-    }
-
-    var dx = 0;
-    var dy = 0;
-
-    // Leave movement exactly as before
-    if (keys["ArrowUp"] || keys["w"] || keys["W"]) {
-        dx += Math.cos(theta) * moveSpeed;
-        dy += Math.sin(theta) * moveSpeed;
-    }
-    if (keys["ArrowDown"] || keys["s"] || keys["S"]) {
-        dx -= Math.cos(theta) * moveSpeed;
-        dy -= Math.sin(theta) * moveSpeed;
-    }
-
-    tryMove(dx, dy);
+	}
 }
 
 function tryMove(dx, dy) {
-    var nx = eyeX + dx;
-    var ny = eyeY + dy;
+	var nx = eyeX + dx;
+	var ny = eyeY + dy;
 
-    if (canMoveTo(nx, eyeY)) {
-        eyeX = nx;
-    }
-    if (canMoveTo(eyeX, ny)) {
-        eyeY = ny;
-    }
+	if (canMoveTo(nx, eyeY)) {
+		eyeX = nx;
+	}
+	if (canMoveTo(eyeX, ny)) {
+		eyeY = ny;
+	}
 }
-const PLAYER_RADIUS = 0.2;
+
+const PLAYER_RADIUS = 0.25;
 function canMoveTo(nx, ny) {
-    if (nx < 0 || ny < 0 || nx >= MzX || ny >= MzY) {
-        return false;
-    }
+	if (nx < 0 || ny < 0 || nx >= MzX || ny >= MzY) {
+		return false;
+	}
 
-    let cellX = Math.floor(nx);
-    let cellY = Math.floor(ny);
+	let cellX = Math.floor(nx);
+	let cellY = Math.floor(ny);
 
-    let localX = nx - cellX; // 0..1 inside cell
-    let localY = ny - cellY;
+	let localX = nx - cellX; // 0..1 inside cell
+	let localY = ny - cellY;
 
-    let walls = maze[cellY][cellX];
+	let walls = maze[cellY][cellX];
 
-    // walls = [top, right, bottom, left]
-    if (walls[0] !== 1 && localY < PLAYER_RADIUS)
-        return false;
+	// walls = [top, right, bottom, left]
+	if (walls[0] !== 1 && localY < PLAYER_RADIUS)
+		return false;
 
-    if (walls[2] !== 1 && localY > 1 - PLAYER_RADIUS)
-        return false;
+	if (walls[2] !== 1 && localY > 1 - PLAYER_RADIUS)
+		return false;
 
-    if (walls[3] !== 1 && localX < PLAYER_RADIUS)
-        return false;
+	if (walls[3] !== 1 && localX < PLAYER_RADIUS)
+		return false;
 
-    if (walls[1] !== 1 && localX > 1 - PLAYER_RADIUS)
-        return false;
+	if (walls[1] !== 1 && localX > 1 - PLAYER_RADIUS)
+		return false;
 
-    return true;
+	return true;
 }
 
 function bindCloydTexture() {
-    if (!cloydTextureA || !cloydTextureB) return;
+	if (!cloydTextureA || !cloydTextureB) return;
 
-    var useAlt =
-        Math.floor((Date.now() - startTime.getTime()) / 300) % 2;
+	var useAlt =
+		Math.floor((Date.now() - startTime.getTime()) / 300) % 2;
 
-    gl.activeTexture(gl.TEXTURE0 + 9);
-    gl.bindTexture(gl.TEXTURE_2D,
-                   useAlt ? cloydTextureB : cloydTextureA);
+	gl.activeTexture(gl.TEXTURE0 + 9);
+	gl.bindTexture(gl.TEXTURE_2D,
+		useAlt ? cloydTextureB : cloydTextureA);
+}
+function startShapeFlip() {
+	if (shapeFlipActive) return;
+
+	shapeFlipActive = true;
+	shapeFlipRemaining = 180; // degrees for a full flip
+	shapeFlipTargetSign = (up[2] >= 0) ? -1 : 1;
+
+	// Keep the flip axis consistent with the current camera orientation,
+	// matching the logic already used elsewhere in the file.
+	shapeFlipAxis = (((Math.round(theta / Math.PI * 180 * 10000) / 10000 % 360 / 90) + 5) % 2) ? 0 : 1;
 }
 
+function updateShapeFlip(dt) {
+	if (!shapeFlipActive) return;
+
+	var scale = dt / BASE_FRAME_MS;
+	var step = INTRO_ROTATE_SPEED_DEG * scale;
+	var rot = Math.min(step, shapeFlipRemaining);
+
+	if (shapeFlipAxis === 0) {
+		up = vec3(mult(rotateX(rot), vec4(up)));
+	} else {
+		up = vec3(mult(rotateY(rot), vec4(up)));
+	}
+
+	shapeFlipRemaining -= rot;
+
+	if (shapeFlipRemaining <= 0.001) {
+		up = vec3(0.0, 0.0, shapeFlipTargetSign);
+		shapeFlipActive = false;
+	}
+}
 var render = function() {
-    if (gameOver) return;
+	if (gameOver) return;
 
-    var now = Date.now();
-    var dt = now - lastFrameTime;
-    lastFrameTime = now;
-    if (dt < 0 || dt > 1000) dt = 16;
+	var now = Date.now();
+	var dt = now - lastFrameTime;
+	lastFrameTime = now;
+	if (dt < 0 || dt > 1000) dt = 16;
 
-    gl.uniform1i(gl.getUniformLocation(program, "lighting"), lighting);
+	gl.uniform1i(gl.getUniformLocation(program, "lighting"), lighting);
 
-    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+	gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-    eye = vec3(eyeX, eyeY, 1 / 3);
-    at = add(eye, vec3(Math.cos(theta), Math.sin(theta), 0));
+	eye = vec3(eyeX, eyeY, 1 / 3);
+	at = add(eye, vec3(Math.cos(theta), Math.sin(theta), 0));
 
-    modelViewMatrix = lookAt(eye, at, up);
-    projectionMatrix = perspective(fovy, aspect, near, far);
-    scaleMatrix = scalem(1, 1, 3 / 4);
+	modelViewMatrix = lookAt(eye, at, up);
+	projectionMatrix = perspective(fovy, aspect, near, far);
+	scaleMatrix = scalem(1, 1, 3 / 4);
 
-    gl.uniformMatrix4fv(modelViewMatrixLoc, false, flatten(modelViewMatrix));
-    gl.uniformMatrix4fv(projectionMatrixLoc, false, flatten(projectionMatrix));
-    gl.uniformMatrix4fv(scaleMatrixLoc, false, flatten(scaleMatrix));
+	gl.uniformMatrix4fv(modelViewMatrixLoc, false, flatten(modelViewMatrix));
+	gl.uniformMatrix4fv(projectionMatrixLoc, false, flatten(projectionMatrix));
+	gl.uniformMatrix4fv(scaleMatrixLoc, false, flatten(scaleMatrix));
 
-    gl.uniform4f(gl.getUniformLocation(program, "cameraPos"), eyeX, eyeY, 1 / 3, 1);
+	gl.uniform4f(gl.getUniformLocation(program, "cameraPos"), eyeX, eyeY, 1 / 3, 1);
 
-    // floor
-    gl.uniform1i(gl.getUniformLocation(program, "i"), 1);
-    gl.drawArrays(gl.TRIANGLES, 0, 6);
+	// Advance the flip animation first, then keep the player frozen while it runs.
+	var wasFlipping = shapeFlipActive;
+	updateShapeFlip(dt);
 
-    // ceiling
-    gl.uniform1i(gl.getUniformLocation(program, "i"), 2);
-    gl.drawArrays(gl.TRIANGLES, 6, 6);
+	// floor
+	gl.uniform1i(gl.getUniformLocation(program, "i"), 1);
+	gl.drawArrays(gl.TRIANGLES, 0, 6);
 
-    if (isNear(eyeX, FinX + 0.5, 0.4) && isNear(eyeY, FinY + 0.5, 0.4)) {
-        height -= .02;
-        scaleMatrix = scalem(1, 1, height);
-        gl.uniformMatrix4fv(scaleMatrixLoc, false, flatten(scaleMatrix));
+	// ceiling
+	gl.uniform1i(gl.getUniformLocation(program, "i"), 2);
+	gl.drawArrays(gl.TRIANGLES, 6, 6);
 
-        if (height < 0)
-            resetVars();
-    }
-    else if (height < 3 / 4) {
-        height += .02;
-        scaleMatrix = scalem(1, 1, height);
-        gl.uniformMatrix4fv(scaleMatrixLoc, false, flatten(scaleMatrix));
-    }
-    else if (Math.round(Math.abs(up[2]) * 10000) / 10000 - 1) {
-        if (((Math.round(theta / Math.PI * 180 * 10000) / 10000 % 360 / 90) + 5) % 2)
-            up = vec3(mult(rotateX(2), vec4(up)));
-        else
-            up = vec3(mult(rotateY(2), vec4(up)));
-    }
-    else {
-        handlePlayerInput();
-    }
-for (let i = 0; i < 4; i++) {
-    [rattheta, ratX, ratY, ratdtheta, ratdX, ratdY] =
-        nextMove(rattheta, ratX, ratY, ratdtheta, ratdX, ratdY);
+	if (isNear(eyeX, FinX + 0.5, 0.4) && isNear(eyeY, FinY + 0.5, 0.4)) {
+		height -= .02;
+		scaleMatrix = scalem(1, 1, height);
+		gl.uniformMatrix4fv(scaleMatrixLoc, false, flatten(scaleMatrix));
 
-    while (ratdtheta)
-        [rattheta, ratX, ratY, ratdtheta, ratdX, ratdY] =
-            nextMove(rattheta, ratX, ratY, ratdtheta, ratdX, ratdY);
+		if (height < 0) {
+			resetVars();
+			requestAnimFrame(render);
+			return;
+		}
+	} else {
+		if (!wasFlipping) {
+			updatePlayerNavigation(dt);
+		}
+		scaleMatrix = scalem(1, 1, height);
+		gl.uniformMatrix4fv(scaleMatrixLoc, false, flatten(scaleMatrix));
+	}
+
+	for (let i = 0; i < 4; i++) {
+		[rattheta, ratX, ratY, ratdtheta, ratdX, ratdY] =
+			nextMove(rattheta, ratX, ratY, ratdtheta, ratdX, ratdY);
+
+		while (ratdtheta)
+			[rattheta, ratX, ratY, ratdtheta, ratdX, ratdY] =
+				nextMove(rattheta, ratX, ratY, ratdtheta, ratdX, ratdY);
+	}
+	updateCloyd(dt);
+	if (gameOver) return;
+
+	//--------------------------------------------------
+	// OPAQUE GEOMETRY
+	//--------------------------------------------------
+
+	// picture walls
+	gl.uniform1i(gl.getUniformLocation(program, "i"), 3);
+	gl.drawArrays(gl.TRIANGLES, 12, PICNUM * 6);
+
+	// maze walls
+	gl.uniform1i(gl.getUniformLocation(program, "i"), 0);
+	gl.drawArrays(gl.TRIANGLES, 12 + PICNUM * 6, NumVertices - PICNUM * 6);
+
+	// polyhedra
+	gl.uniform1i(gl.getUniformLocation(program, "i"), 8);
+
+	polytheta += 2;
+
+	for (i = 0; i < polypos.length; i++) {
+
+		scaleMatrix = mult(
+			scalem(1, 1, 3 / 4),
+			mult(
+				translate(polypos[i][0] + .5, polypos[i][1] + .5, .25),
+				rotateZ(polytheta)
+			)
+		);
+
+		gl.uniformMatrix4fv(scaleMatrixLoc, false, flatten(scaleMatrix));
+
+		gl.drawArrays(
+			gl.TRIANGLES,
+			[12, 24, 48, 108][polypos[i][2]] + 6 + NumVertices,
+			[12, 24, 60, 108][polypos[i][2]]
+		);
+
+if (
+	isNear(eyeX, polypos[i][0] + 0.5, 0.4) &&
+	isNear(eyeY, polypos[i][1] + 0.5, 0.4)
+) {
+	startShapeFlip();
+	polypos.splice(i, 1);
+	i--;
 }
-    updateCloyd(dt);
-    if (gameOver) return;
+	}
 
-    //--------------------------------------------------
-    // OPAQUE GEOMETRY
-    //--------------------------------------------------
+	//--------------------------------------------------
+	// TRANSPARENT BILLBOARDS
+	//--------------------------------------------------
 
-    // picture walls
-    gl.uniform1i(gl.getUniformLocation(program, "i"), 3);
-    gl.drawArrays(gl.TRIANGLES, 12, PICNUM * 6);
+	gl.depthMask(false);
+	gl.disable(gl.CULL_FACE);
 
-    // maze walls
-    gl.uniform1i(gl.getUniformLocation(program, "i"), 0);
-    gl.drawArrays(gl.TRIANGLES, 12 + PICNUM * 6, NumVertices - PICNUM * 6);
+	var sprites = [];
 
-    // polyhedra
-    gl.uniform1i(gl.getUniformLocation(program, "i"), 8);
+	sprites.push({
+		type: 4,
+		x: SX1 + .5,
+		y: SY1 + .5
+	});
 
-    polytheta += 2;
+	sprites.push({
+		type: 5,
+		x: FinX + .5,
+		y: FinY + .5
+	});
 
-    for (i = 0; i < polypos.length; i++) {
+	sprites.push({
+		type: 7,
+		x: ratX,
+		y: ratY
+	});
 
-        scaleMatrix = mult(
-            scalem(1, 1, 3 / 4),
-            mult(
-                translate(polypos[i][0] + .5, polypos[i][1] + .5, .25),
-                rotateZ(polytheta)
-            )
-        );
+	sprites.push({
+		type: 9,
+		x: cloydX,
+		y: cloydY
+	});
 
-        gl.uniformMatrix4fv(scaleMatrixLoc, false, flatten(scaleMatrix));
+	for (i = 0; i < openpos.length; i++) {
+		sprites.push({
+			type: 6,
+			x: openpos[i][0] + .5,
+			y: openpos[i][1] + .5
+		});
+	}
 
-        gl.drawArrays(
-            gl.TRIANGLES,
-            [12, 24, 48, 108][polypos[i][2]] + 6 + NumVertices,
-            [12, 24, 60, 108][polypos[i][2]]
-        );
+	// sort farthest first
+	sprites.sort(function(a, b) {
 
-        if (
-            isNear(eyeX, polypos[i][0] + 0.5, 0.4) &&
-            isNear(eyeY, polypos[i][1] + 0.5, 0.4)
-        ) {
+		var da =
+			(eyeX - a.x) * (eyeX - a.x) +
+			(eyeY - a.y) * (eyeY - a.y);
 
-            if (((Math.round(theta / Math.PI * 180 * 10000) / 10000 % 360 / 90) + 5) % 2)
-                up = vec3(mult(rotateX(2), vec4(up)));
-            else
-                up = vec3(mult(rotateY(2), vec4(up)));
+		var db =
+			(eyeX - b.x) * (eyeX - b.x) +
+			(eyeY - b.y) * (eyeY - b.y);
 
-            polypos.splice(i, 1);
-        }
-    }
+		return db - da;
+	});
 
-    //--------------------------------------------------
-    // TRANSPARENT BILLBOARDS
-    //--------------------------------------------------
+	for (i = 0; i < sprites.length; i++) {
 
-    gl.depthMask(false);
-    gl.disable(gl.CULL_FACE);
+		var s = sprites[i];
 
-    var sprites = [];
+		gl.uniform1i(gl.getUniformLocation(program, "i"), s.type);
 
-    sprites.push({
-        type: 4,
-        x: SX1 + .5,
-        y: SY1 + .5
-    });
+		if (s.type === 9)
+			bindCloydTexture();
 
-    sprites.push({
-        type: 5,
-        x: FinX + .5,
-        y: FinY + .5
-    });
+		var zScale = 0.75;
+		var zTranslate = 0;
 
-    sprites.push({
-        type: 7,
-        x: ratX,
-        y: ratY
-    });
+		if (s.type === 9 && up[2] < 0) {
+			zScale = -0.75;        // Flip vertically (invert Z)
+			zTranslate = 0.75;     // Shift up so the sprite rests on the floor
+		}
 
-    sprites.push({
-        type: 9,
-        x: cloydX,
-        y: cloydY
-    });
+		scaleMatrix = mult(
+			scalem(1, 1, height),
+			mult(
+				translate(s.x, s.y, zTranslate),
+				mult(
+					rotateZ(theta / Math.PI * 180),
+					scalem(0.75, 0.75, zScale)
+				)
+			)
+		);
+		gl.uniformMatrix4fv(
+			scaleMatrixLoc,
+			false,
+			flatten(scaleMatrix)
+		);
 
-    for (i = 0; i < openpos.length; i++) {
-        sprites.push({
-            type: 6,
-            x: openpos[i][0] + .5,
-            y: openpos[i][1] + .5
-        });
-    }
+		gl.drawArrays(gl.TRIANGLES, NumVertices + 12, 6);
+	}
 
-    // sort farthest first
-    sprites.sort(function(a, b) {
+	gl.enable(gl.CULL_FACE);
+	gl.depthMask(true);
 
-        var da =
-            (eyeX - a.x) * (eyeX - a.x) +
-            (eyeY - a.y) * (eyeY - a.y);
-
-        var db =
-            (eyeX - b.x) * (eyeX - b.x) +
-            (eyeY - b.y) * (eyeY - b.y);
-
-        return db - da;
-    });
-
-    for (i = 0; i < sprites.length; i++) {
-
-        var s = sprites[i];
-
-        gl.uniform1i(gl.getUniformLocation(program, "i"), s.type);
-
-        if (s.type === 9)
-            bindCloydTexture();
-
-// Inside the loop over sprites
-var zScale = 0.75;
-var zTranslate = 0;
-
-if (s.type === 9 && up[2] < 0) {
-    zScale = -0.75;        // Flip vertically (invert Z)
-    zTranslate = 0.75;     // Shift up so the sprite rests on the floor
+	requestAnimFrame(render);
 }
 
-scaleMatrix = mult(
-    scalem(1, 1, height),
-    mult(
-        translate(s.x, s.y, zTranslate),
-        mult(
-            rotateZ(theta / Math.PI * 180),
-            scalem(0.75, 0.75, zScale)
-        )
-    )
-);
-        gl.uniformMatrix4fv(
-            scaleMatrixLoc,
-            false,
-            flatten(scaleMatrix)
-        );
-
-        gl.drawArrays(gl.TRIANGLES, NumVertices + 12, 6);
-    }
-
-    gl.enable(gl.CULL_FACE);
-    gl.depthMask(true);
-
-    requestAnimFrame(render);
-}
 function nextMove(theta, X, Y, dtheta, dX, dY) {
 	var degtheta = Math.round(theta / Math.PI * 180 * 10000) / 10000;
 	X = Math.round(X * 10000) / 10000;
@@ -1077,19 +1238,19 @@ function nextMove(theta, X, Y, dtheta, dX, dY) {
 		return [theta + dtheta, X, Y, dtheta, dX, dY];
 	} else if ((X + .5) % 1 || (Y + .5) % 1) {
 		return [theta, X + dX, Y + dY, dtheta, dX, dY];
-	} else { //new move
-		var direction = ((degtheta % 360 / 90) + 5) % 4;		
+	} else { // new move
+		var direction = ((degtheta % 360 / 90) + 5) % 4;
 		var walls = maze[Y - .5][X - .5];
-		//[-Y,+X,+Y,-X]
-		//[ 0, 1, 2, 3]
+		// [-Y,+X,+Y,-X]
+		// [ 0, 1, 2, 3]
 		// turn right = theta minus = <--
 		//
-		//strategy: 
-		//just-turned and front=open - foward
-		//right=open - rotate right
-		//front=open - foward
-		//left=open - rotate left
-		//else i.e. dead end - rotate right
+		// strategy:
+		// just-turned and front=open - forward
+		// right=open - rotate right
+		// front=open - forward
+		// left=open - rotate left
+		// else i.e. dead end - rotate right
 		if (dtheta && walls[direction] == 1) {
 			dX = ((direction == 1) - (direction == 3)) / 100;
 			dY = ((direction == 2) - (direction == 0)) / 100;
@@ -1107,16 +1268,16 @@ function nextMove(theta, X, Y, dtheta, dX, dY) {
 		} else {
 			dtheta = -1 * Math.PI / 180.0;
 			return [theta + dtheta, X, Y, dtheta, 0, 0];
-		}		
+		}
 	}
 }
 
-function newMaze(x, y) { //https://www.dstromberg.com/2013/07/tutorial-random-maze-generation-algorithm-in-javascript/
+function newMaze(x, y) { // https://www.dstromberg.com/2013/07/tutorial-random-maze-generation-algorithm-in-javascript/
 	var totalCells = x * y;
-    var cells = new Array();
-    var unvis = new Array();
+	var cells = new Array();
+	var unvis = new Array();
 
-    //initilize arrays	
+	// initilize arrays
 	for (var i = 0; i < y; i++) {
 		cells[i] = new Array();
 		unvis[i] = new Array();
@@ -1126,41 +1287,40 @@ function newMaze(x, y) { //https://www.dstromberg.com/2013/07/tutorial-random-ma
 		}
 	}
 
-	//set starting position
+	// set starting position
 	var currentCell = [Math.floor(Math.random() * y), Math.floor(Math.random() * x)];
 
 	var path = [currentCell];
 	unvis[currentCell[0]][currentCell[1]] = false;
 	var visited = 1;
-	
-	
+
 	while (visited < totalCells) {
-		//generate array of valid unvisited neighbor cells
+		// generate array of valid unvisited neighbor cells
 		var potential = [[currentCell[0] - 1, currentCell[1], 0, 2],	// top
-						[currentCell[0], currentCell[1] + 1, 1, 3],	// right
-				        [currentCell[0] + 1, currentCell[1], 2, 0],	// bottom
-				        [currentCell[0], currentCell[1] - 1, 3, 1]];	// left
+			[currentCell[0], currentCell[1] + 1, 1, 3],	// right
+			[currentCell[0] + 1, currentCell[1], 2, 0],	// bottom
+			[currentCell[0], currentCell[1] - 1, 3, 1]];	// left
 		var neighbors = new Array();
 		for (var l = 0; l < 4; l++) {
 			if (potential[l][0] > -1 && potential[l][0] < y && potential[l][1] > -1 && potential[l][1] < x && unvis[potential[l][0]][potential[l][1]]) {
 				neighbors.push(potential[l]);
 			}
 		}
-		//remove the border to a neighboring cell and visit it
+		// remove the border to a neighboring cell and visit it
 		if (neighbors.length) {
 			var next = neighbors[Math.floor(Math.random() * neighbors.length)];
 			cells[currentCell[0]][currentCell[1]][next[2]] = 1;
 			cells[next[0]][next[1]][next[3]] = 1;
-			
+
 			unvis[next[0]][next[1]] = false;
 			visited++;
-			
+
 			currentCell = [next[0], next[1]];
 			path.push(currentCell);
 		} else {
-		    currentCell = path.pop();
+			currentCell = path.pop();
 		}
 	}
-	
-    return cells;
+
+	return cells;
 }
