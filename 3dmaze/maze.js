@@ -16,7 +16,7 @@ POLYNUM = Math.min(POLYNUM, MzX * MzY - 4);
 OPENNUM = Math.min(OPENNUM, MzX * MzY - 4 - POLYNUM);
 
 const CLOYD_CHASE_MS = 20000;
-const CLOYD_SPEED = 0.5;
+const CLOYD_SPEED = 0.6;
 const CLOYD_BG_A = './clair.webp';
 const CLOYD_BG_B = './floyd.png';
 var shapeFlipActive = false;
@@ -907,7 +907,7 @@ function mazevertices() {
 			pointsArray.push(point);
 			var faceCount = polyind[i].length / 3;
 			var face = Math.floor(j / 3);
-			var shade = 0.03 + 0.15 * face / (faceCount - 1);
+			var shade = 0.01 + 0.5 * face / (faceCount - 1);
 
 			colorsArray.push([shade, shade, shade, 1]);
 			texCoordsArray.push(texCoord[0][j % 3]);
@@ -950,7 +950,7 @@ function tryMove(dx, dy) {
 	}
 }
 
-const PLAYER_RADIUS = 0.25;
+const PLAYER_RADIUS = 0.2;
 function canMoveTo(nx, ny) {
 	if (nx < 0 || ny < 0 || nx >= MzX || ny >= MzY) {
 		return false;
